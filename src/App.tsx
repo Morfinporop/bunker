@@ -1,217 +1,578 @@
-import { useState, useEffect } from 'react';
-import axios from 'axios';
-import io from 'socket.io-client';
+import { useState, useEffect } from 'react'
+import axios from 'axios'
 
-const API_URL = import.meta.env.PROD ? '' : 'http://localhost:3001';
-const socket = io(API_URL);
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
 interface Server {
-  id: string;
-  name: string;
-  port: number;
-  gamemode: string;
-  map: string;
-  status: string;
-  players: number;
-  maxPlayers: number;
-  tickrate: number;
-  created: string;
+  id: string
+  name: string
+  status: 'running' | 'stopped' | 'starting' | 'stopping'
+  gamemode: string
+  map: string
+  maxplayers: number
+  currentplayers: number
+  port: number
+  memory: number
+  cpu: number
+  ip: string
 }
 
-interface FileItem {
-  name: string;
-  type: string;
-  size: number;
-  modified: string;
+interface ConsoleLog {
+  timestamp: string
+  message: string
+  type: 'info' | 'error' | 'warning'
 }
 
-export default function App() {
-  const [view, setView] = useState<'create' | 'list' | 'panel'>('list');
-  const [servers, setServers] = useState<Server[]>([]);
-  const [selectedServer, setSelectedServer] = useState<Server | null>(null);
-  const [tab, setTab] = useState<'dashboard' | 'console' | 'files' | 'settings' | 'startup'>('dashboard');
-  const [serverName, setServerName] = useState('');
-  const [serverPort, setServerPort] = useState('27015');
-  const [gamemode, setGamemode] = useState('sandbox');
-  const [map, setMap] = useState('gm_flatgrass');
-  const [consoleLines, setConsoleLines] = useState<string[]>([]);
-  const [command, setCommand] = useState('');
-  const [files, setFiles] = useState<FileItem[]>([]);
+function App() {
+  const [currentView, setCurrentView] = useState('dashboard')
+  const [servers, setServers] = useState<Server[]>([])
+  const [selectedServer, setSelectedServer] = useState<Server | null>(null)
+  const [consoleLogs, setConsoleLogs] = useState<ConsoleLog[]>([])
+  const [consoleInput, setConsoleInput] = useState('')
+  const [showCreateModal, setShowCreateModal] = useState(false)
+  const [newServerData, setNewServerData] = useState({
+    name: '',
+    gamemode: 'sandbox',
+    map: 'gm_flatgrass',
+    maxplayers: 16,
+    memory: 2048,
+    port: 27015
+  })
 
   useEffect(() => {
-    loadServers();
-    
-    socket.on('console', (data) => {
-      if (selectedServer && data.id === selectedServer.id) {
-        setConsoleLines(prev => [...prev, data.line].slice(-100));
-      }
-    });
+    loadServers()
+    const interval = setInterval(loadServers, 5000)
+    return () => clearInterval(interval)
+  }, [])
 
-    socket.on('serverStatus', (data) => {
-      if (selectedServer && data.id === selectedServer.id) {
-        setSelectedServer(prev => prev ? { ...prev, status: data.status } : null);
-      }
-      loadServers();
-    });
-
-    return () => {
-      socket.off('console');
-      socket.off('serverStatus');
-    };
-  }, [selectedServer]);
+  useEffect(() => {
+    if (selectedServer && currentView === 'console') {
+      loadConsoleLogs(selectedServer.id)
+    }
+  }, [selectedServer, currentView])
 
   const loadServers = async () => {
     try {
-      const res = await axios.get(`${API_URL}/api/servers`);
-      setServers(res.data);
+      const response = await axios.get(`${API_URL}/api/servers`)
+      setServers(response.data)
     } catch (error) {
-      console.error('Failed to load servers:', error);
+      console.error('Failed to load servers:', error)
     }
-  };
+  }
+
+  const loadConsoleLogs = async (serverId: string) => {
+    try {
+      const response = await axios.get(`${API_URL}/api/servers/${serverId}/logs`)
+      setConsoleLogs(response.data)
+    } catch (error) {
+      console.error('Failed to load logs:', error)
+    }
+  }
 
   const createServer = async () => {
-    if (!serverName.trim()) return;
-    
     try {
-      const res = await axios.post(`${API_URL}/api/servers`, {
-        name: serverName,
-        port: parseInt(serverPort),
-        gamemode,
-        map
-      });
-      setServers([...servers, res.data]);
-      setServerName('');
-      setView('list');
+      await axios.post(`${API_URL}/api/servers`, newServerData)
+      setShowCreateModal(false)
+      setNewServerData({
+        name: '',
+        gamemode: 'sandbox',
+        map: 'gm_flatgrass',
+        maxplayers: 16,
+        memory: 2048,
+        port: 27015
+      })
+      loadServers()
     } catch (error) {
-      console.error('Failed to create server:', error);
+      console.error('Failed to create server:', error)
     }
-  };
+  }
 
-  const startServer = async (id: string) => {
+  const startServer = async (serverId: string) => {
     try {
-      const res = await axios.post(`${API_URL}/api/servers/${id}/start`);
-      if (selectedServer?.id === id) {
-        setSelectedServer(res.data);
-      }
-      loadServers();
+      await axios.post(`${API_URL}/api/servers/${serverId}/start`)
+      loadServers()
     } catch (error) {
-      console.error('Failed to start server:', error);
+      console.error('Failed to start server:', error)
     }
-  };
+  }
 
-  const stopServer = async (id: string) => {
+  const stopServer = async (serverId: string) => {
     try {
-      const res = await axios.post(`${API_URL}/api/servers/${id}/stop`);
-      if (selectedServer?.id === id) {
-        setSelectedServer(res.data);
-      }
-      loadServers();
+      await axios.post(`${API_URL}/api/servers/${serverId}/stop`)
+      loadServers()
     } catch (error) {
-      console.error('Failed to stop server:', error);
+      console.error('Failed to stop server:', error)
     }
-  };
+  }
 
-  const restartServer = async (id: string) => {
+  const restartServer = async (serverId: string) => {
     try {
-      await axios.post(`${API_URL}/api/servers/${id}/restart`);
-      loadServers();
+      await axios.post(`${API_URL}/api/servers/${serverId}/restart`)
+      loadServers()
     } catch (error) {
-      console.error('Failed to restart server:', error);
+      console.error('Failed to restart server:', error)
     }
-  };
+  }
 
-  const deleteServer = async (id: string) => {
+  const deleteServer = async (serverId: string) => {
+    if (!confirm('Вы уверены что хотите удалить сервер?')) return
     try {
-      await axios.delete(`${API_URL}/api/servers/${id}`);
-      setServers(servers.filter(s => s.id !== id));
+      await axios.delete(`${API_URL}/api/servers/${serverId}`)
+      setSelectedServer(null)
+      loadServers()
     } catch (error) {
-      console.error('Failed to delete server:', error);
+      console.error('Failed to delete server:', error)
     }
-  };
+  }
 
   const sendCommand = async () => {
-    if (!command.trim() || !selectedServer) return;
-    
+    if (!selectedServer || !consoleInput.trim()) return
     try {
-      await axios.post(`${API_URL}/api/servers/${selectedServer.id}/command`, { command });
-      setCommand('');
+      await axios.post(`${API_URL}/api/servers/${selectedServer.id}/command`, {
+        command: consoleInput
+      })
+      setConsoleInput('')
+      loadConsoleLogs(selectedServer.id)
     } catch (error) {
-      console.error('Failed to send command:', error);
+      console.error('Failed to send command:', error)
     }
-  };
+  }
 
-  const loadFiles = async () => {
-    if (!selectedServer) return;
-    
-    try {
-      const res = await axios.get(`${API_URL}/api/servers/${selectedServer.id}/files`);
-      setFiles(res.data);
-    } catch (error) {
-      console.error('Failed to load files:', error);
-    }
-  };
+  const renderDashboard = () => (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold text-white">Панель управления серверами</h1>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-semibold hover:from-indigo-700 hover:to-purple-700 transition-all duration-200"
+        >
+          Создать сервер
+        </button>
+      </div>
 
-  const updateSettings = async (settings: Partial<Server>) => {
-    if (!selectedServer) return;
-    
-    try {
-      const res = await axios.put(`${API_URL}/api/servers/${selectedServer.id}/settings`, settings);
-      setSelectedServer(res.data);
-      loadServers();
-    } catch (error) {
-      console.error('Failed to update settings:', error);
-    }
-  };
-
-  const openPanel = (server: Server) => {
-    setSelectedServer(server);
-    setView('panel');
-    setTab('dashboard');
-    setConsoleLines([]);
-  };
-
-  if (view === 'create') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
-        <div className="max-w-2xl mx-auto">
-          <button
-            onClick={() => setView('list')}
-            className="mb-6 px-4 py-2 bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl text-white hover:bg-white/20 transition-all"
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {servers.map(server => (
+          <div
+            key={server.id}
+            className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6 hover:bg-white/10 transition-all duration-300 cursor-pointer"
+            onClick={() => {
+              setSelectedServer(server)
+              setCurrentView('overview')
+            }}
           >
-            ← Назад
-          </button>
-          
-          <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-8 shadow-2xl">
-            <h1 className="text-3xl font-bold text-white mb-8">Создать сервер</h1>
-            
-            <div className="space-y-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-bold text-white">{server.name}</h3>
+              <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                server.status === 'running' ? 'bg-green-500/20 text-green-400' :
+                server.status === 'stopped' ? 'bg-red-500/20 text-red-400' :
+                'bg-yellow-500/20 text-yellow-400'
+              }`}>
+                {server.status === 'running' ? 'Запущен' : server.status === 'stopped' ? 'Остановлен' : 'Загрузка'}
+              </span>
+            </div>
+
+            <div className="space-y-2 text-sm text-gray-300">
+              <div className="flex justify-between">
+                <span>Игроки:</span>
+                <span className="text-white font-semibold">{server.currentplayers}/{server.maxplayers}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Режим:</span>
+                <span className="text-white font-semibold">{server.gamemode}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Карта:</span>
+                <span className="text-white font-semibold">{server.map}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>IP:</span>
+                <span className="text-indigo-400 font-mono text-xs">{server.ip}:{server.port}</span>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-4 border-t border-white/10">
+              <div className="flex justify-between text-xs text-gray-400">
+                <span>CPU: {server.cpu}%</span>
+                <span>RAM: {server.memory}MB</span>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {servers.length === 0 && (
+          <div className="col-span-full text-center py-12 text-gray-400">
+            <p className="text-xl mb-2">Нет активных серверов</p>
+            <p className="text-sm">Создайте свой первый сервер Garry's Mod</p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
+  const renderOverview = () => {
+    if (!selectedServer) return null
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-white mb-2">{selectedServer.name}</h1>
+            <p className="text-gray-400">ID: {selectedServer.id}</p>
+          </div>
+          <div className="flex gap-3">
+            {selectedServer.status === 'stopped' && (
+              <button
+                onClick={() => startServer(selectedServer.id)}
+                className="px-6 py-3 bg-green-600 text-white rounded-xl font-semibold hover:bg-green-700 transition-all"
+              >
+                Запустить
+              </button>
+            )}
+            {selectedServer.status === 'running' && (
+              <>
+                <button
+                  onClick={() => restartServer(selectedServer.id)}
+                  className="px-6 py-3 bg-yellow-600 text-white rounded-xl font-semibold hover:bg-yellow-700 transition-all"
+                >
+                  Перезапустить
+                </button>
+                <button
+                  onClick={() => stopServer(selectedServer.id)}
+                  className="px-6 py-3 bg-red-600 text-white rounded-xl font-semibold hover:bg-red-700 transition-all"
+                >
+                  Остановить
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+            <p className="text-gray-400 text-sm mb-2">Статус</p>
+            <p className="text-2xl font-bold text-white capitalize">{selectedServer.status}</p>
+          </div>
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+            <p className="text-gray-400 text-sm mb-2">Игроки онлайн</p>
+            <p className="text-2xl font-bold text-white">{selectedServer.currentplayers}/{selectedServer.maxplayers}</p>
+          </div>
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+            <p className="text-gray-400 text-sm mb-2">Использование CPU</p>
+            <p className="text-2xl font-bold text-white">{selectedServer.cpu}%</p>
+          </div>
+          <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+            <p className="text-gray-400 text-sm mb-2">Использование RAM</p>
+            <p className="text-2xl font-bold text-white">{selectedServer.memory}MB</p>
+          </div>
+        </div>
+
+        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+          <h2 className="text-xl font-bold text-white mb-4">Информация о сервере</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div className="flex justify-between py-2 border-b border-white/10">
+              <span className="text-gray-400">IP адрес:</span>
+              <span className="text-white font-mono">{selectedServer.ip}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-white/10">
+              <span className="text-gray-400">Порт:</span>
+              <span className="text-white font-mono">{selectedServer.port}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-white/10">
+              <span className="text-gray-400">Игровой режим:</span>
+              <span className="text-white">{selectedServer.gamemode}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-white/10">
+              <span className="text-gray-400">Карта:</span>
+              <span className="text-white">{selectedServer.map}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-white/10">
+              <span className="text-gray-400">Максимум игроков:</span>
+              <span className="text-white">{selectedServer.maxplayers}</span>
+            </div>
+            <div className="flex justify-between py-2 border-b border-white/10">
+              <span className="text-gray-400">Строка подключения:</span>
+              <span className="text-indigo-400 font-mono text-xs">connect {selectedServer.ip}:{selectedServer.port}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderConsole = () => {
+    if (!selectedServer) return null
+
+    return (
+      <div className="space-y-6">
+        <h1 className="text-3xl font-bold text-white">Консоль - {selectedServer.name}</h1>
+
+        <div className="bg-black/40 backdrop-blur-xl border border-white/10 rounded-2xl p-6 h-[600px] flex flex-col">
+          <div className="flex-1 overflow-y-auto space-y-1 mb-4 font-mono text-sm">
+            {consoleLogs.map((log, index) => (
+              <div key={index} className={`${
+                log.type === 'error' ? 'text-red-400' :
+                log.type === 'warning' ? 'text-yellow-400' :
+                'text-gray-300'
+              }`}>
+                <span className="text-gray-500">[{log.timestamp}]</span> {log.message}
+              </div>
+            ))}
+            {consoleLogs.length === 0 && (
+              <div className="text-gray-500">Консоль пуста. Запустите сервер для просмотра логов.</div>
+            )}
+          </div>
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={consoleInput}
+              onChange={(e) => setConsoleInput(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && sendCommand()}
+              placeholder="Введите команду..."
+              className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+            />
+            <button
+              onClick={sendCommand}
+              className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700 transition-all"
+            >
+              Отправить
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderFiles = () => {
+    if (!selectedServer) return null
+
+    return (
+      <div className="space-y-6">
+        <h1 className="text-3xl font-bold text-white">Файловый менеджер - {selectedServer.name}</h1>
+
+        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+          <div className="mb-4 flex gap-2">
+            <button className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+              Загрузить файл
+            </button>
+            <button className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700">
+              Создать папку
+            </button>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg cursor-pointer">
+              <span className="text-2xl">📁</span>
+              <div className="flex-1">
+                <p className="text-white font-semibold">addons</p>
+                <p className="text-xs text-gray-400">15 файлов</p>
+              </div>
+              <button className="text-gray-400 hover:text-white">⋮</button>
+            </div>
+            <div className="flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg cursor-pointer">
+              <span className="text-2xl">📁</span>
+              <div className="flex-1">
+                <p className="text-white font-semibold">lua</p>
+                <p className="text-xs text-gray-400">42 файла</p>
+              </div>
+              <button className="text-gray-400 hover:text-white">⋮</button>
+            </div>
+            <div className="flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg cursor-pointer">
+              <span className="text-2xl">📁</span>
+              <div className="flex-1">
+                <p className="text-white font-semibold">data</p>
+                <p className="text-xs text-gray-400">8 файлов</p>
+              </div>
+              <button className="text-gray-400 hover:text-white">⋮</button>
+            </div>
+            <div className="flex items-center gap-3 p-3 hover:bg-white/5 rounded-lg cursor-pointer">
+              <span className="text-2xl">📄</span>
+              <div className="flex-1">
+                <p className="text-white font-semibold">server.cfg</p>
+                <p className="text-xs text-gray-400">2.4 KB</p>
+              </div>
+              <button className="text-gray-400 hover:text-white">⋮</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderSettings = () => {
+    if (!selectedServer) return null
+
+    return (
+      <div className="space-y-6">
+        <h1 className="text-3xl font-bold text-white">Настройки - {selectedServer.name}</h1>
+
+        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+          <h2 className="text-xl font-bold text-white mb-6">Основные настройки</h2>
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-semibold text-gray-300 mb-2">Название сервера</label>
+              <input
+                type="text"
+                defaultValue={selectedServer.name}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-300 mb-2">Игровой режим</label>
+              <select
+                defaultValue={selectedServer.gamemode}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
+              >
+                <option value="sandbox">Sandbox</option>
+                <option value="darkrp">DarkRP</option>
+                <option value="ttt">Trouble in Terrorist Town</option>
+                <option value="prophunt">Prop Hunt</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-300 mb-2">Максимум игроков</label>
+              <input
+                type="number"
+                defaultValue={selectedServer.maxplayers}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-semibold text-gray-300 mb-2">Выделенная память (MB)</label>
+              <input
+                type="number"
+                defaultValue={selectedServer.memory}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
+              />
+            </div>
+          </div>
+          <div className="mt-6 flex gap-3">
+            <button className="px-6 py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700">
+              Сохранить изменения
+            </button>
+            <button
+              onClick={() => deleteServer(selectedServer.id)}
+              className="px-6 py-3 bg-red-600 text-white rounded-xl font-semibold hover:bg-red-700"
+            >
+              Удалить сервер
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="flex h-screen">
+        <aside className="w-72 bg-black/20 backdrop-blur-xl border-r border-white/10 p-6">
+          <div className="mb-8">
+            <h1 className="text-2xl font-bold text-white mb-1">GMOD Host</h1>
+            <p className="text-sm text-gray-400">Панель управления</p>
+          </div>
+
+          <nav className="space-y-2">
+            <button
+              onClick={() => {
+                setCurrentView('dashboard')
+                setSelectedServer(null)
+              }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold transition-all ${
+                currentView === 'dashboard'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-gray-300 hover:bg-white/5'
+              }`}
+            >
+              <span className="text-xl">🏠</span>
+              Главная
+            </button>
+
+            {selectedServer && (
+              <>
+                <div className="pt-4 pb-2">
+                  <p className="text-xs font-semibold text-gray-500 uppercase px-4">
+                    {selectedServer.name}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setCurrentView('overview')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold transition-all ${
+                    currentView === 'overview'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-gray-300 hover:bg-white/5'
+                  }`}
+                >
+                  <span className="text-xl">📊</span>
+                  Обзор
+                </button>
+                <button
+                  onClick={() => setCurrentView('console')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold transition-all ${
+                    currentView === 'console'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-gray-300 hover:bg-white/5'
+                  }`}
+                >
+                  <span className="text-xl">💻</span>
+                  Консоль
+                </button>
+                <button
+                  onClick={() => setCurrentView('files')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold transition-all ${
+                    currentView === 'files'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-gray-300 hover:bg-white/5'
+                  }`}
+                >
+                  <span className="text-xl">📁</span>
+                  Файлы
+                </button>
+                <button
+                  onClick={() => setCurrentView('settings')}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl font-semibold transition-all ${
+                    currentView === 'settings'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-gray-300 hover:bg-white/5'
+                  }`}
+                >
+                  <span className="text-xl">⚙️</span>
+                  Настройки
+                </button>
+              </>
+            )}
+          </nav>
+        </aside>
+
+        <main className="flex-1 overflow-y-auto p-8">
+          {currentView === 'dashboard' && renderDashboard()}
+          {currentView === 'overview' && renderOverview()}
+          {currentView === 'console' && renderConsole()}
+          {currentView === 'files' && renderFiles()}
+          {currentView === 'settings' && renderSettings()}
+        </main>
+      </div>
+
+      {showCreateModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 border border-white/10 rounded-2xl p-8 max-w-md w-full">
+            <h2 className="text-2xl font-bold text-white mb-6">Создать новый сервер</h2>
+            <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-white/80 mb-2">Название сервера</label>
+                <label className="block text-sm font-semibold text-gray-300 mb-2">Название сервера</label>
                 <input
                   type="text"
-                  value={serverName}
-                  onChange={(e) => setServerName(e.target.value)}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                  placeholder="Мой сервер GMod"
+                  value={newServerData.name}
+                  onChange={(e) => setNewServerData({...newServerData, name: e.target.value})}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
+                  placeholder="Мой GMod сервер"
                 />
               </div>
-              
               <div>
-                <label className="block text-sm font-medium text-white/80 mb-2">Порт</label>
-                <input
-                  type="number"
-                  value={serverPort}
-                  onChange={(e) => setServerPort(e.target.value)}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                />
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-white/80 mb-2">Режим игры</label>
+                <label className="block text-sm font-semibold text-gray-300 mb-2">Игровой режим</label>
                 <select
-                  value={gamemode}
-                  onChange={(e) => setGamemode(e.target.value)}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white focus:outline-none focus:border-white/40 transition-all"
+                  value={newServerData.gamemode}
+                  onChange={(e) => setNewServerData({...newServerData, gamemode: e.target.value})}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
                 >
                   <option value="sandbox">Sandbox</option>
                   <option value="darkrp">DarkRP</option>
@@ -219,371 +580,53 @@ export default function App() {
                   <option value="prophunt">Prop Hunt</option>
                 </select>
               </div>
-              
               <div>
-                <label className="block text-sm font-medium text-white/80 mb-2">Карта</label>
+                <label className="block text-sm font-semibold text-gray-300 mb-2">Стартовая карта</label>
                 <input
                   type="text"
-                  value={map}
-                  onChange={(e) => setMap(e.target.value)}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
+                  value={newServerData.map}
+                  onChange={(e) => setNewServerData({...newServerData, map: e.target.value})}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
                 />
               </div>
-              
+              <div>
+                <label className="block text-sm font-semibold text-gray-300 mb-2">Максимум игроков</label>
+                <input
+                  type="number"
+                  value={newServerData.maxplayers}
+                  onChange={(e) => setNewServerData({...newServerData, maxplayers: parseInt(e.target.value)})}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-300 mb-2">Память (MB)</label>
+                <input
+                  type="number"
+                  value={newServerData.memory}
+                  onChange={(e) => setNewServerData({...newServerData, memory: parseInt(e.target.value)})}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex gap-3">
               <button
                 onClick={createServer}
-                className="w-full py-3 bg-white/20 backdrop-blur-xl border border-white/30 rounded-xl text-white font-medium hover:bg-white/30 transition-all shadow-lg"
+                className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-xl font-semibold hover:bg-indigo-700"
               >
-                Создать сервер
+                Создать
               </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (view === 'panel' && selectedServer) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
-        <div className="max-w-7xl mx-auto">
-          <div className="flex items-center justify-between mb-6">
-            <button
-              onClick={() => setView('list')}
-              className="px-4 py-2 bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl text-white hover:bg-white/20 transition-all"
-            >
-              ← Назад к списку
-            </button>
-            
-            <div className="flex items-center gap-4">
-              <div className="px-4 py-2 bg-white/10 backdrop-blur-xl border border-white/20 rounded-xl text-white">
-                {selectedServer.status === 'running' ? (
-                  <span className="flex items-center gap-2">
-                    <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></span>
-                    Запущен
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-2">
-                    <span className="w-2 h-2 bg-red-400 rounded-full"></span>
-                    Остановлен
-                  </span>
-                )}
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6 shadow-2xl mb-6">
-            <h1 className="text-3xl font-bold text-white mb-2">{selectedServer.name}</h1>
-            <p className="text-white/60">ID: {selectedServer.id}</p>
-          </div>
-
-          <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
-            {['dashboard', 'console', 'files', 'settings', 'startup'].map((t) => (
               <button
-                key={t}
-                onClick={() => {
-                  setTab(t as any);
-                  if (t === 'files') loadFiles();
-                }}
-                className={`px-6 py-3 rounded-xl font-medium transition-all whitespace-nowrap ${
-                  tab === t
-                    ? 'bg-white/20 backdrop-blur-xl border border-white/30 text-white shadow-lg'
-                    : 'bg-white/5 backdrop-blur-xl border border-white/10 text-white/60 hover:bg-white/10'
-                }`}
+                onClick={() => setShowCreateModal(false)}
+                className="flex-1 px-6 py-3 bg-white/5 text-white rounded-xl font-semibold hover:bg-white/10"
               >
-                {t === 'dashboard' && 'Главная'}
-                {t === 'console' && 'Консоль'}
-                {t === 'files' && 'Файлы'}
-                {t === 'settings' && 'Настройки'}
-                {t === 'startup' && 'Запуск'}
+                Отмена
               </button>
-            ))}
+            </div>
           </div>
-
-          {tab === 'dashboard' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-                  <div className="text-white/60 text-sm mb-2">Статус</div>
-                  <div className="text-2xl font-bold text-white">{selectedServer.status}</div>
-                </div>
-                <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-                  <div className="text-white/60 text-sm mb-2">Игроки</div>
-                  <div className="text-2xl font-bold text-white">{selectedServer.players}/{selectedServer.maxPlayers}</div>
-                </div>
-                <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-                  <div className="text-white/60 text-sm mb-2">Порт</div>
-                  <div className="text-2xl font-bold text-white">{selectedServer.port}</div>
-                </div>
-                <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-                  <div className="text-white/60 text-sm mb-2">Tickrate</div>
-                  <div className="text-2xl font-bold text-white">{selectedServer.tickrate}</div>
-                </div>
-              </div>
-
-              <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-                <h2 className="text-xl font-bold text-white mb-4">Управление</h2>
-                <div className="flex flex-wrap gap-3">
-                  {selectedServer.status !== 'running' ? (
-                    <button
-                      onClick={() => startServer(selectedServer.id)}
-                      className="px-6 py-3 bg-green-500/20 backdrop-blur-xl border border-green-400/30 rounded-xl text-green-300 font-medium hover:bg-green-500/30 transition-all"
-                    >
-                      Запустить
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => stopServer(selectedServer.id)}
-                      className="px-6 py-3 bg-red-500/20 backdrop-blur-xl border border-red-400/30 rounded-xl text-red-300 font-medium hover:bg-red-500/30 transition-all"
-                    >
-                      Остановить
-                    </button>
-                  )}
-                  <button
-                    onClick={() => restartServer(selectedServer.id)}
-                    className="px-6 py-3 bg-blue-500/20 backdrop-blur-xl border border-blue-400/30 rounded-xl text-blue-300 font-medium hover:bg-blue-500/30 transition-all"
-                  >
-                    Перезапустить
-                  </button>
-                </div>
-              </div>
-
-              <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-                <h2 className="text-xl font-bold text-white mb-4">Информация</h2>
-                <div className="space-y-3 text-white/80">
-                  <div className="flex justify-between py-2 border-b border-white/10">
-                    <span>Режим игры:</span>
-                    <span className="font-medium">{selectedServer.gamemode}</span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b border-white/10">
-                    <span>Карта:</span>
-                    <span className="font-medium">{selectedServer.map}</span>
-                  </div>
-                  <div className="flex justify-between py-2 border-b border-white/10">
-                    <span>Создан:</span>
-                    <span className="font-medium">{new Date(selectedServer.created).toLocaleString()}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {tab === 'console' && (
-            <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-              <div className="bg-black/40 rounded-xl p-4 h-96 overflow-y-auto font-mono text-sm mb-4">
-                {consoleLines.length === 0 ? (
-                  <div className="text-white/40">Консоль пуста. Запустите сервер для просмотра логов.</div>
-                ) : (
-                  consoleLines.map((line, i) => (
-                    <div key={i} className="text-green-400 mb-1">{line}</div>
-                  ))
-                )}
-              </div>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={command}
-                  onChange={(e) => setCommand(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && sendCommand()}
-                  placeholder="Введите команду..."
-                  className="flex-1 px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                />
-                <button
-                  onClick={sendCommand}
-                  className="px-6 py-3 bg-white/20 backdrop-blur-xl border border-white/30 rounded-xl text-white font-medium hover:bg-white/30 transition-all"
-                >
-                  Отправить
-                </button>
-              </div>
-            </div>
-          )}
-
-          {tab === 'files' && (
-            <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-              <h2 className="text-xl font-bold text-white mb-4">Файловый менеджер</h2>
-              <div className="space-y-2">
-                {files.length === 0 ? (
-                  <div className="text-white/40 text-center py-8">Файлы не найдены</div>
-                ) : (
-                  files.map((file, i) => (
-                    <div key={i} className="flex items-center justify-between p-4 bg-white/5 rounded-xl hover:bg-white/10 transition-all">
-                      <div className="flex items-center gap-3">
-                        <div className="text-2xl">
-                          {file.type === 'folder' ? '📁' : '📄'}
-                        </div>
-                        <div>
-                          <div className="text-white font-medium">{file.name}</div>
-                          <div className="text-white/40 text-sm">
-                            {file.type === 'folder' ? 'Папка' : `${(file.size / 1024).toFixed(2)} KB`}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-white/40 text-sm">
-                        {new Date(file.modified).toLocaleString()}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
-
-          {tab === 'settings' && (
-            <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-              <h2 className="text-xl font-bold text-white mb-6">Настройки сервера</h2>
-              <div className="space-y-6">
-                <div>
-                  <label className="block text-sm font-medium text-white/80 mb-2">Название сервера</label>
-                  <input
-                    type="text"
-                    defaultValue={selectedServer.name}
-                    onBlur={(e) => updateSettings({ name: e.target.value })}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-white/80 mb-2">Максимум игроков</label>
-                  <input
-                    type="number"
-                    defaultValue={selectedServer.maxPlayers}
-                    onBlur={(e) => updateSettings({ maxPlayers: parseInt(e.target.value) })}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-white/80 mb-2">Tickrate</label>
-                  <input
-                    type="number"
-                    defaultValue={selectedServer.tickrate}
-                    onBlur={(e) => updateSettings({ tickrate: parseInt(e.target.value) })}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {tab === 'startup' && (
-            <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6">
-              <h2 className="text-xl font-bold text-white mb-6">Параметры запуска</h2>
-              <div className="space-y-6">
-                <div>
-                  <label className="block text-sm font-medium text-white/80 mb-2">Режим игры</label>
-                  <input
-                    type="text"
-                    defaultValue={selectedServer.gamemode}
-                    onBlur={(e) => updateSettings({ gamemode: e.target.value })}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-white/80 mb-2">Карта</label>
-                  <input
-                    type="text"
-                    defaultValue={selectedServer.map}
-                    onBlur={(e) => updateSettings({ map: e.target.value })}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-white/80 mb-2">Порт сервера</label>
-                  <input
-                    type="number"
-                    defaultValue={selectedServer.port}
-                    onBlur={(e) => updateSettings({ port: parseInt(e.target.value) })}
-                    className="w-full px-4 py-3 bg-white/5 border border-white/20 rounded-xl text-white placeholder-white/40 focus:outline-none focus:border-white/40 transition-all"
-                  />
-                </div>
-              </div>
-            </div>
-          )}
         </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 p-6">
-      <div className="max-w-7xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-4xl font-bold text-white mb-2">GMod Control Panel</h1>
-            <p className="text-white/60">Управление серверами Garry's Mod</p>
-          </div>
-          <button
-            onClick={() => setView('create')}
-            className="px-6 py-3 bg-white/20 backdrop-blur-xl border border-white/30 rounded-xl text-white font-medium hover:bg-white/30 transition-all shadow-lg"
-          >
-            + Создать сервер
-          </button>
-        </div>
-
-        {servers.length === 0 ? (
-          <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-12 text-center">
-            <div className="text-6xl mb-4">🎮</div>
-            <h2 className="text-2xl font-bold text-white mb-2">Серверов пока нет</h2>
-            <p className="text-white/60 mb-6">Создайте свой первый сервер Garry's Mod</p>
-            <button
-              onClick={() => setView('create')}
-              className="px-6 py-3 bg-white/20 backdrop-blur-xl border border-white/30 rounded-xl text-white font-medium hover:bg-white/30 transition-all"
-            >
-              Создать сервер
-            </button>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {servers.map((server) => (
-              <div key={server.id} className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-6 hover:bg-white/15 transition-all shadow-lg">
-                <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <h3 className="text-xl font-bold text-white mb-1">{server.name}</h3>
-                    <p className="text-white/60 text-sm">{server.gamemode}</p>
-                  </div>
-                  <div className={`px-3 py-1 rounded-lg text-xs font-medium ${
-                    server.status === 'running'
-                      ? 'bg-green-500/20 text-green-300 border border-green-400/30'
-                      : 'bg-red-500/20 text-red-300 border border-red-400/30'
-                  }`}>
-                    {server.status === 'running' ? 'Online' : 'Offline'}
-                  </div>
-                </div>
-
-                <div className="space-y-2 mb-4 text-sm text-white/80">
-                  <div className="flex justify-between">
-                    <span>Игроки:</span>
-                    <span className="font-medium">{server.players}/{server.maxPlayers}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Порт:</span>
-                    <span className="font-medium">{server.port}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>Карта:</span>
-                    <span className="font-medium">{server.map}</span>
-                  </div>
-                </div>
-
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => openPanel(server)}
-                    className="flex-1 px-4 py-2 bg-white/20 backdrop-blur-xl border border-white/30 rounded-xl text-white text-sm font-medium hover:bg-white/30 transition-all"
-                  >
-                    Управление
-                  </button>
-                  {server.status !== 'running' && (
-                    <button
-                      onClick={() => deleteServer(server.id)}
-                      className="px-4 py-2 bg-red-500/20 backdrop-blur-xl border border-red-400/30 rounded-xl text-red-300 text-sm font-medium hover:bg-red-500/30 transition-all"
-                    >
-                      Удалить
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
     </div>
-  );
+  )
 }
+
+export default App
