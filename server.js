@@ -1,253 +1,321 @@
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
+import express from 'express';
+import cors from 'cors';
+import { WebSocketServer } from 'ws';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import fs from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const RAILWAY_PUBLIC_DOMAIN = process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost';
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static('dist'));
+app.use(express.static(join(__dirname, 'dist')));
 
-const servers = new Map();
-const serverLogs = new Map();
-let serverIdCounter = 3;
+let servers = [];
+let logs = {};
 
-const exampleServers = [
-  {
-    id: 'server-1',
-    name: 'Sandbox Server #1',
-    status: 'stopped',
-    gamemode: 'sandbox',
-    map: 'gm_flatgrass',
-    maxplayers: 16,
-    currentplayers: 0,
-    port: 27015,
-    memory: 2048,
-    cpu: 0,
-    ip: RAILWAY_PUBLIC_DOMAIN
-  },
-  {
-    id: 'server-2',
-    name: 'DarkRP Server',
-    status: 'stopped',
-    gamemode: 'darkrp',
-    map: 'rp_downtown_v4c',
-    maxplayers: 32,
-    currentplayers: 0,
-    port: 27016,
-    memory: 4096,
-    cpu: 0,
-    ip: RAILWAY_PUBLIC_DOMAIN
+function generateServerId() {
+  return `gmod_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function getServerLogs(serverId) {
+  if (!logs[serverId]) {
+    logs[serverId] = [];
   }
-];
+  return logs[serverId];
+}
 
-exampleServers.forEach(server => {
-  servers.set(server.id, server);
-  serverLogs.set(server.id, []);
-});
-
-function addLog(serverId, message, type = 'info') {
-  if (!serverLogs.has(serverId)) {
-    serverLogs.set(serverId, []);
+function addLog(serverId, message) {
+  if (!logs[serverId]) {
+    logs[serverId] = [];
+  }
+  const logEntry = {
+    timestamp: new Date().toISOString(),
+    message
+  };
+  logs[serverId].push(logEntry);
+  if (logs[serverId].length > 1000) {
+    logs[serverId] = logs[serverId].slice(-1000);
   }
   
-  const logs = serverLogs.get(serverId);
-  const timestamp = new Date().toLocaleTimeString('ru-RU');
-  
-  logs.push({ timestamp, message, type });
-  
-  if (logs.length > 100) {
-    logs.shift();
-  }
-  
-  serverLogs.set(serverId, logs);
+  wss.clients.forEach(client => {
+    if (client.readyState === 1) {
+      client.send(JSON.stringify({
+        type: 'log',
+        serverId,
+        data: logEntry
+      }));
+    }
+  });
 }
 
 app.get('/api/servers', (req, res) => {
-  res.json(Array.from(servers.values()));
-});
-
-app.get('/api/servers/:id', (req, res) => {
-  const server = servers.get(req.params.id);
-  if (!server) return res.status(404).json({ error: 'Server not found' });
-  res.json(server);
+  res.json(servers);
 });
 
 app.post('/api/servers', (req, res) => {
-  const { name, gamemode, map, maxplayers, memory } = req.body;
+  const { name, gamemode, maxplayers, map } = req.body;
   
-  const server = {
-    id: `server-${serverIdCounter++}`,
-    name,
-    gamemode,
-    map,
-    maxplayers,
-    currentplayers: 0,
-    port: 27015 + servers.size,
-    memory,
-    cpu: 0,
+  const port = 27015 + servers.length;
+  const serverId = generateServerId();
+  
+  const newServer = {
+    id: serverId,
+    name: name || 'GMod Server',
+    gamemode: gamemode || 'sandbox',
+    maxplayers: parseInt(maxplayers) || 16,
+    map: map || 'gm_flatgrass',
+    port,
     status: 'stopped',
-    ip: RAILWAY_PUBLIC_DOMAIN
+    players: 0,
+    cpu: 0,
+    ram: 0,
+    created: new Date().toISOString()
   };
   
-  servers.set(server.id, server);
-  serverLogs.set(server.id, []);
+  servers.push(newServer);
+  addLog(serverId, `Server ${name} created on port ${port}`);
   
-  addLog(server.id, `Сервер ${name} создан`);
-  
-  res.json(server);
+  res.json(newServer);
 });
 
-app.post('/api/servers/:id/start', async (req, res) => {
-  const server = servers.get(req.params.id);
-  if (!server) return res.status(404).json({ error: 'Server not found' });
+app.delete('/api/servers/:id', (req, res) => {
+  const { id } = req.params;
+  const serverIndex = servers.findIndex(s => s.id === id);
   
-  if (server.status === 'running') {
-    return res.status(400).json({ error: 'Server already running' });
+  if (serverIndex === -1) {
+    return res.status(404).json({ error: 'Server not found' });
+  }
+  
+  const server = servers[serverIndex];
+  servers.splice(serverIndex, 1);
+  delete logs[id];
+  
+  addLog(id, `Server ${server.name} deleted`);
+  res.json({ success: true });
+});
+
+app.post('/api/servers/:id/start', (req, res) => {
+  const { id } = req.params;
+  const server = servers.find(s => s.id === id);
+  
+  if (!server) {
+    return res.status(404).json({ error: 'Server not found' });
   }
   
   server.status = 'starting';
-  servers.set(server.id, server);
-  
-  addLog(server.id, 'Запуск сервера...');
-  addLog(server.id, `Загрузка карты ${server.map}...`);
-  addLog(server.id, `Инициализация режима ${server.gamemode}...`);
-  addLog(server.id, 'Подключение к Steam Workshop...');
-  addLog(server.id, 'Загрузка аддонов...');
+  addLog(id, 'Starting server...');
+  addLog(id, 'Loading gamemode: ' + server.gamemode);
+  addLog(id, 'Loading map: ' + server.map);
   
   setTimeout(() => {
     server.status = 'running';
-    server.cpu = Math.floor(Math.random() * 30) + 20;
-    server.currentplayers = Math.floor(Math.random() * 5);
-    servers.set(server.id, server);
-    
-    addLog(server.id, 'Сервер успешно запущен!');
-    addLog(server.id, `Подключение: connect ${server.ip}:${server.port}`);
+    server.players = 0;
+    server.cpu = Math.floor(Math.random() * 30 + 10);
+    server.ram = Math.floor(Math.random() * 500 + 200);
+    addLog(id, `Server started on port ${server.port}`);
+    addLog(id, `Max players: ${server.maxplayers}`);
     
     const interval = setInterval(() => {
-      const s = servers.get(server.id);
-      if (s && s.status === 'running') {
-        s.cpu = Math.floor(Math.random() * 20) + 30;
-        s.currentplayers = Math.min(s.maxplayers, Math.max(0, s.currentplayers + (Math.random() > 0.5 ? 1 : -1)));
-        servers.set(server.id, s);
-      } else {
+      const srv = servers.find(s => s.id === id);
+      if (!srv || srv.status !== 'running') {
         clearInterval(interval);
+        return;
       }
-    }, 10000);
-  }, 3000);
+      
+      if (Math.random() > 0.7) {
+        const change = Math.floor(Math.random() * 3) - 1;
+        srv.players = Math.max(0, Math.min(srv.maxplayers, srv.players + change));
+        if (change > 0) {
+          addLog(id, `Player connected [${srv.players}/${srv.maxplayers}]`);
+        } else if (change < 0 && srv.players < srv.maxplayers - 1) {
+          addLog(id, `Player disconnected [${srv.players}/${srv.maxplayers}]`);
+        }
+      }
+      
+      srv.cpu = Math.max(5, srv.cpu + (Math.random() * 10 - 5));
+      srv.ram = Math.max(100, srv.ram + (Math.random() * 50 - 25));
+    }, 5000);
+  }, 2000);
   
   res.json(server);
 });
 
 app.post('/api/servers/:id/stop', (req, res) => {
-  const server = servers.get(req.params.id);
-  if (!server) return res.status(404).json({ error: 'Server not found' });
+  const { id } = req.params;
+  const server = servers.find(s => s.id === id);
   
-  if (server.status === 'stopped') {
-    return res.status(400).json({ error: 'Server already stopped' });
+  if (!server) {
+    return res.status(404).json({ error: 'Server not found' });
   }
   
   server.status = 'stopping';
-  servers.set(server.id, server);
-  
-  addLog(server.id, 'Остановка сервера...');
-  addLog(server.id, 'Отключение игроков...');
-  addLog(server.id, 'Сохранение данных...');
+  addLog(id, 'Stopping server...');
   
   setTimeout(() => {
     server.status = 'stopped';
+    server.players = 0;
     server.cpu = 0;
-    server.currentplayers = 0;
-    servers.set(server.id, server);
-    
-    addLog(server.id, 'Сервер остановлен');
-  }, 2000);
+    server.ram = 0;
+    addLog(id, 'Server stopped');
+  }, 1500);
   
   res.json(server);
 });
 
 app.post('/api/servers/:id/restart', (req, res) => {
-  const server = servers.get(req.params.id);
-  if (!server) return res.status(404).json({ error: 'Server not found' });
+  const { id } = req.params;
+  const server = servers.find(s => s.id === id);
   
-  addLog(server.id, 'Перезапуск сервера...');
+  if (!server) {
+    return res.status(404).json({ error: 'Server not found' });
+  }
   
-  server.status = 'stopping';
-  servers.set(server.id, server);
+  server.status = 'restarting';
+  addLog(id, 'Restarting server...');
   
   setTimeout(() => {
-    server.status = 'starting';
-    servers.set(server.id, server);
-    
-    addLog(server.id, 'Запуск сервера...');
-    
-    setTimeout(() => {
-      server.status = 'running';
-      server.cpu = Math.floor(Math.random() * 30) + 20;
-      servers.set(server.id, server);
-      
-      addLog(server.id, 'Сервер успешно перезапущен!');
-    }, 3000);
-  }, 2000);
+    server.status = 'running';
+    addLog(id, 'Server restarted successfully');
+  }, 3000);
   
   res.json(server);
 });
 
-app.delete('/api/servers/:id', (req, res) => {
-  const server = servers.get(req.params.id);
-  if (server) {
-    addLog(server.id, 'Сервер удален');
-    servers.delete(req.params.id);
-    serverLogs.delete(req.params.id);
-  }
-  res.json({ success: true });
-});
-
 app.get('/api/servers/:id/logs', (req, res) => {
-  const logs = serverLogs.get(req.params.id) || [];
-  res.json(logs);
+  const { id } = req.params;
+  res.json(getServerLogs(id));
 });
 
 app.post('/api/servers/:id/command', (req, res) => {
+  const { id } = req.params;
   const { command } = req.body;
-  const server = servers.get(req.params.id);
   
-  if (!server) return res.status(404).json({ error: 'Server not found' });
-  
-  addLog(req.params.id, `> ${command}`, 'info');
-  
-  if (command === 'status') {
-    addLog(req.params.id, `Статус: ${server.status}`, 'info');
-    addLog(req.params.id, `Игроки: ${server.currentplayers}/${server.maxplayers}`, 'info');
-    addLog(req.params.id, `CPU: ${server.cpu}%`, 'info');
-    addLog(req.params.id, `RAM: ${server.memory}MB`, 'info');
-  } else if (command.startsWith('changelevel')) {
-    const map = command.split(' ')[1] || 'gm_flatgrass';
-    server.map = map;
-    servers.set(server.id, server);
-    addLog(req.params.id, `Смена карты на ${map}...`, 'info');
-    setTimeout(() => {
-      addLog(req.params.id, `Карта изменена на ${map}`, 'info');
-    }, 2000);
-  } else if (command === 'help') {
-    addLog(req.params.id, 'Доступные команды:', 'info');
-    addLog(req.params.id, '  status - показать статус сервера', 'info');
-    addLog(req.params.id, '  changelevel <map> - сменить карту', 'info');
-    addLog(req.params.id, '  help - список команд', 'info');
-  } else {
-    addLog(req.params.id, `Команда "${command}" выполнена`, 'info');
+  const server = servers.find(s => s.id === id);
+  if (!server) {
+    return res.status(404).json({ error: 'Server not found' });
   }
+  
+  addLog(id, `> ${command}`);
+  
+  setTimeout(() => {
+    if (command.includes('status')) {
+      addLog(id, `hostname: ${server.name}`);
+      addLog(id, `map: ${server.map} at (0, 0, 0)`);
+      addLog(id, `players: ${server.players}/${server.maxplayers}`);
+    } else if (command.includes('changelevel')) {
+      const mapMatch = command.match(/changelevel\s+(\S+)/);
+      if (mapMatch) {
+        server.map = mapMatch[1];
+        addLog(id, `Changing level to ${mapMatch[1]}...`);
+      }
+    } else if (command.includes('say')) {
+      addLog(id, `Console: ${command.replace('say', '').trim()}`);
+    } else {
+      addLog(id, `Command executed: ${command}`);
+    }
+  }, 100);
   
   res.json({ success: true });
 });
 
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+app.get('/api/servers/:id/files', (req, res) => {
+  const { id } = req.params;
+  const { path = '/' } = req.query;
+  
+  const files = [
+    { name: 'garrysmod', type: 'directory', size: 0 },
+    { name: 'server.cfg', type: 'file', size: 1024 },
+    { name: 'autoexec.cfg', type: 'file', size: 512 },
+  ];
+  
+  if (path === '/garrysmod' || path === '/garrysmod/') {
+    files.push(
+      { name: 'addons', type: 'directory', size: 0 },
+      { name: 'cfg', type: 'directory', size: 0 },
+      { name: 'lua', type: 'directory', size: 0 },
+      { name: 'data', type: 'directory', size: 0 }
+    );
+  }
+  
+  res.json(files);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+app.get('/api/servers/:id/file', (req, res) => {
+  const { path } = req.query;
+  
+  if (path.includes('server.cfg')) {
+    res.json({
+      content: `hostname "${servers[0]?.name || 'GMod Server'}"
+sv_password ""
+rcon_password "changeme"
+sv_allowupload 1
+sv_allowdownload 1
+net_maxfilesize 64`
+    });
+  } else if (path.includes('autoexec.cfg')) {
+    res.json({
+      content: `exec server.cfg
+log on`
+    });
+  } else {
+    res.json({ content: '' });
+  }
+});
+
+app.post('/api/servers/:id/file', (req, res) => {
+  const { id } = req.params;
+  const { path, content } = req.body;
+  
+  addLog(id, `File saved: ${path}`);
+  res.json({ success: true });
+});
+
+app.put('/api/servers/:id', (req, res) => {
+  const { id } = req.params;
+  const server = servers.find(s => s.id === id);
+  
+  if (!server) {
+    return res.status(404).json({ error: 'Server not found' });
+  }
+  
+  Object.assign(server, req.body);
+  addLog(id, 'Server settings updated');
+  
+  res.json(server);
+});
+
+app.get('*', (req, res) => {
+  res.sendFile(join(__dirname, 'dist', 'index.html'));
+});
+
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Public domain: ${RAILWAY_PUBLIC_DOMAIN}`);
+  console.log(`Public URL: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'localhost:' + PORT}`);
+});
+
+const wss = new WebSocketServer({ server });
+
+wss.on('connection', (ws) => {
+  console.log('WebSocket client connected');
+  
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message.toString());
+      console.log('Received:', data);
+    } catch (e) {
+      console.error('Invalid message:', e);
+    }
+  });
+  
+  ws.on('close', () => {
+    console.log('WebSocket client disconnected');
+  });
 });

@@ -2,11 +2,11 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache git curl bash
+RUN apk add --no-cache python3 make g++ git curl bash
 
 COPY package*.json ./
 
-RUN npm install
+RUN npm install --legacy-peer-deps
 
 COPY . .
 
